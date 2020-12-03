@@ -521,6 +521,45 @@ class LockboxInputWidget(ModuleWidget):
                             'show GUI display of expected signal (min at %f)!',
                             input.name, input.expected_signal(0))
 
+class AutoLockInputWidget(LockboxInputWidget):
+    """
+    A widget to represent the autolockbox input - needs more interactivity.
+    """
+    def init_gui(self):
+        #self.main_layout = QtWidgets.QVBoxLayout(self)
+        self.init_main_layout(orientation="vertical")
+        self.init_attribute_layout()
+
+        self.win = pg.GraphicsWindow(title="Expected signal")
+        self.plot_item = self.win.addPlot(title='Expected ' + self.module.name)
+        self.plot_item.showGrid(y=True, x=True, alpha=1.)
+        self.search_pattern_region = pg.LinearRegionItem(
+                orientation='vertical',
+                values=[self.module.search_pattern_xmin, 
+                        self.module.search_pattern_xmax],
+                movable=True)
+        self.search_pattern_region.sigRegionChangeFinished.connect(self._update_search_pattern_bounds)
+        self.plot_item.addItem(self.search_pattern_region)
+        self.curve = self.plot_item.plot(pen='y')
+        self.curve_slope = self.plot_item.plot(pen=pg.mkPen('b', width=5))
+        self.symbol = self.plot_item.plot(pen='b', symbol='o')
+        self.main_layout.addWidget(self.win)
+        self.button_calibrate = QtWidgets.QPushButton('Calibrate')
+        self.main_layout.addWidget(self.button_calibrate)
+        self.button_calibrate.clicked.connect(lambda: self.module.calibrate())
+        self.input_calibrated()
+
+    def _update_search_pattern_bounds(self):
+        xmin, xmax = self.search_pattern_region.getRegion()
+        self.module.search_pattern_xmin = xmin
+        self.module.search_pattern_xmax = xmax
+        
+    def update_autolock_plot(self):
+        xmin = self.module.search_pattern_xmin
+        xmax = self.module.search_pattern_xmax
+        self.search_pattern_region.setRegion([xmin, xmax])
+
+
 class InputsWidget(QtWidgets.QWidget):
     """
     A widget to represent all input signals on the same tab

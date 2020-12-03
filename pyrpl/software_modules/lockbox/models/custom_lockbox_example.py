@@ -111,8 +111,7 @@ class ExampleLoopLockbox(Lockbox):
     def start(self):
         self.stop()
         self.loop = ExampleLoop(parent=self,
-                                name="example_loop",
-                                interval=self.interval)
+                                name="example_loop")
 
     def stop(self):
         if self.loop is not None:

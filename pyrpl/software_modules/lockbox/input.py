@@ -359,6 +359,7 @@ class InputSignal(Signal):
         error_threshold = self.lockbox.is_locked_threshold
         min = self.expected_signal(setpoint-error_threshold)
         max = self.expected_signal(setpoint+error_threshold)
+        # error threshold is in units of the variable, not of the error signal
         startslope = self.expected_slope(setpoint - error_threshold)
         stopslope = self.expected_slope(setpoint + error_threshold)
         # no guarantee that min<max
