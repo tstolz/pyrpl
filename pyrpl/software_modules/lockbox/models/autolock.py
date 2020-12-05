@@ -2,8 +2,9 @@
 from pyrpl.software_modules.lockbox import *
 from pyrpl.software_modules.loop import *
 import numpy as np
-from ....widgets.module_widgets import AutoLockInputWidget
+from ....widgets.module_widgets import AutoCalibrateInputWidget
 from ....modules import SignalLauncher
+from ....attributes import DataProperty
 from qtpy import QtCore
 import dtw
 
@@ -19,17 +20,22 @@ class SignalLauncherAutoCalibrateInput(SignalLauncher):
 
 class AutoCalibrationData(CalibrationData):
     """ class to hold the calibration data of the autocalibration input """
-    _setup_attributes = ["calibration_datasets", "output_at_lock_point", 
+    _setup_attributes = ["calibration_datasets", "lock_point_x", 
                          "slope_at_lock_point"]
     _gui_attributes = []
     
     calibration_datasets = DataProperty(default=[], doc="data acquired during "
                                                        "calibration scans")
-    output_at_lock_point = FloatProperty(default=0, doc="output voltage at the"
-                                                         " lockpoint")
+    lock_point_x = FloatProperty(default=0, doc="output voltage to get to the "
+                                              "lockpoint")
+    lock_point_y = FloatProperty(default=0, doc="projected errorsignal at the "
+                                              "lockpoint")
     slope_at_lock_point = FloatProperty(default=1, doc="error signal change "
                                                        "per output voltage change"
                                                        "at the lockpoint")
+    scaled_search_pattern = DataProperty(default=[], 
+                                             doc="search pattern scaled "
+                                                 "to calibration scans")
     def clean_up_datasets(self):
         #TODO: remove overlapping regions in datasets
         print('cleaning up datasets')
@@ -59,9 +65,20 @@ class AutoCalibrateInput(InputSignal):
     _signal_launcher = SignalLauncherAutoCalibrateInput
     _setup_attributes = ["setpoint_x", "slope_interval",
                          "search_pattern_xmin", "search_pattern_xmax",
-                         "definition_signal"]
+                         "jump_to_lockpoint_in_first_stage",
+                         "calibration_sweep_amplitude",
+                         "calibration_sweep_offset",
+                         "calibration_sweep_frequency",
+                         "calibration_sweep_steps",
+                         "calibration_sweep_zoomfactor"]
     _gui_attributes = ["setpoint_x", "slope_interval",
-                         "search_pattern_xmin", "search_pattern_xmax"]
+                         "search_pattern_xmin", "search_pattern_xmax",
+                         "jump_to_lockpoint_in_first_stage",
+                         "calibration_sweep_amplitude",
+                         "calibration_sweep_offset",
+                         "calibration_sweep_frequency",
+                         "calibration_sweep_steps",
+                         "calibration_sweep_zoomfactor"]
     calibration_data = ModuleProperty(AutoCalibrationData)
 
     setpoint_x = FloatProperty(default=0., doc = "position of the lock point"
@@ -103,7 +120,7 @@ class AutoCalibrateInput(InputSignal):
     
     def __init__(self, parent, name=None):
         self.data_function = lambda x: np.array(x)*0 # return a flat function by default
-        super(AutoLockInput, self).__init__(parent, name=name)
+        super(AutoCalibrateInput, self).__init__(parent, name=name)
         
     def expected_signal(self, variable):
         return self.data_function(variable)
@@ -237,6 +254,9 @@ class AutoCalibrateInput(InputSignal):
                                       self.calibration_sweep_frequency)
             times, error_signal, actuator_signal = self._get_scope_data()
             lb.unlock() # after we have our data, sweeping can end
+            if error_signal is None:
+                self._logger.warning('Aborting calibration because no scope is available...')
+                return None
             
             # pattern matching using dynamic time warping
             # first resample new signal to match the search pattern
@@ -261,10 +281,12 @@ class AutoCalibrateInput(InputSignal):
                                             matching_actuator_values)
             # apply this to the calibrated lock point
             # setpoint_x has to be inside the search pattern for this to work
-            self.calibration_data.output_at_lock_point = time_warp(self.setpoint_x)
+            self.calibration_data.lock_point_x = time_warp(self.setpoint_x)
             # the timewarped search pattern should contain the original 
             # setpoint definition data, but with the x-axis scaled (time-warped)
             tw_search_pattern[0] = time_warp(tw_search_pattern[0])
+            self.calibration_data.scaled_search_pattern = tw_search_pattern
+            
             # update the search pattern for the next step
             # use the new data which is more accurate
             pattern_mask = (actuator_signal >= min(matching_actuator_values)) & \
@@ -272,13 +294,14 @@ class AutoCalibrateInput(InputSignal):
             search_pattern[0] = actuator_signal[pattern_mask]
             search_pattern[1] = error_signal[pattern_mask]
             # determine slope around lockpoint
-            a_min = self.calibration_data.output_at_lock_point - slope_interval/2.
-            a_max = self.calibration_data.output_at_lock_point + slope_interval/2.
+            a_min = self.calibration_data.lock_point_x - slope_interval/2.
+            a_max = self.calibration_data.lock_point_x + slope_interval/2.
             slope_mask = (actuator_signal >= a_min) & \
                          (actuator_signal <= a_max)
-            slope = np.polyfit(actuator_signal[slope_mask], 
-                               error_signal[slope_mask], deg=1)[0]
+            slope, offset = np.polyfit(actuator_signal[slope_mask], 
+                               error_signal[slope_mask], deg=1)
             self.calibration_data.slope_at_lock_point = slope
+            self.calibration_data.lock_point_y = offset + slope*self.calibration_data.lock_point_x
             
             # clean up data
             self.calibration_data.clean_up_datasets()
@@ -287,37 +310,12 @@ class AutoCalibrateInput(InputSignal):
             sweep_amplitude *= self.calibration_sweep_zoomfactor
             # we always want to use the full amplitude for sweeping even if 
             # this shifts the lock point out of the center
-            sweep_offset = np.clip(self.calibration_data.output_at_lock_point,
+            sweep_offset = np.clip(self.calibration_data.lock_point_x,
                                    self.sweep_output.min_voltage + amplitude,
                                    self.sweep_output.max_voltage - amplitude)
             
             self.lockbox._signal_launcher.update_plots.emit()
             
-        times, error_signal, actuator_signal = self._get_scope_data()
-        self.lockbox.unlock() # after we have our data, sweeping can end
-        # cut out the rising slope
-        istart = np.argmin(actuator_signal)
-        istop = np.argmax(actuator_signal[istart:])+istart
-        error_signal = error_signal[istart:istop]
-        actuator_signal = actuator_signal[istart:istop]
-        times = times[istart:istop]
-        if error_signal is None:
-            self._logger.warning('Aborting calibration because no scope is available...')
-            return None
-        self.calibration_data.get_stats_from_curve(error_signal)
-        self.calibration_data.error_signal = error_signal
-        self.calibration_data.actuator_signal = actuator_signal
-        self.scope_data_function = lambda x: np.interp(x, actuator_signal, error_signal)
-        self.plot_range = np.linspace(min(actuator_signal), max(actuator_signal), 1000)
-        # log calibration values
-        self._logger.info("%s calibration successful - Min: %.3f  Max: %.3f  Mean: %.3f  Rms: %.3f",
-                          self.name,
-                          self.calibration_data.min,
-                          self.calibration_data.max,
-                          self.calibration_data.mean,
-                          self.calibration_data.rms)
-        # update graph in lockbox
-        self.lockbox._signal_launcher.input_calibrated.emit([self])
         # set stage0 offset
         if self.jump_to_lockpoint_in_first_stage:
             name = self.sweep_output.name
@@ -336,9 +334,6 @@ class AutoCalibrateInput(InputSignal):
             return None
 
 
-class AutoLockOutput(OutputSignal):
-    pass
-
 class AutoCalibrateLockbox(Lockbox):
     """ 
     A lockbox that uses an autocalibrate input and offers the option to perform
@@ -349,18 +344,10 @@ class AutoCalibrateLockbox(Lockbox):
 
     # list of attributes that are mandatory to define lockbox state. setup_attributes of all base classes and of all
 #    # submodules are automatically added to the list by the metaclass of Module
-    _setup_attributes = ["autolock_sweep_amplitude", "autolock_sweep_offset", 
-                         "autolock_sweep_frequency", "autolock_sweep_steps", 
-                         "autolock_sweep_zoomfactor"]
+    _setup_attributes = ["always_calibrate_before_locking"]
 #    # attributes that are displayed in the gui. _gui_attributes from base classes are also added.
-    _gui_attributes = ["autolock_sweep_amplitude", "autolock_sweep_offset", 
-                         "autolock_sweep_frequency", "autolock_sweep_steps", 
-                         "autolock_sweep_zoomfactor"]
+    _gui_attributes = ["always_calibrate_before_locking"]
     always_calibrate_before_locking = BoolProperty(default=True)
-    
-    def __init__(self, parent, name=None):
-        super(AutoLock, self).__init__(parent=parent, name=name)
-        pass # nothing to do so far
         
     def auto_calibration_sweep(self, amplitude, offset, frequency):
         # set up the output and arbitrary signal generator (asg)
@@ -380,13 +367,14 @@ class AutoCalibrateLockbox(Lockbox):
 
     def lock(self, **kwargs):
         """
-            If checkbox is enabled, calibrates all channels before locking.
+            If checkbox is enabled, calibrates autocalibrate input before locking.
             
             After that, same as in Lockbox:
             Launches the full lock sequence, stage by stage until the end.
             optional kwds are stage attributes that are set after iteration through
             the sequence, e.g. a modified setpoint.
         """
-        self.calibrate_all()               
+        if self.always_calibrate_before_locking:
+            self.inputs.autocalibrate_input.calibrate()               
         super(AutoLock, self).lock(**kwargs)
 

@@ -533,17 +533,19 @@ class AutoCalibrateInputWidget(LockboxInputWidget):
         self.init_main_layout(orientation="vertical")
         self.init_attribute_layout()
 
-        self.win = pg.GraphicsWindow(title="Expected signal")
-        self.plot_item = self.win.addPlot(title='Expected ' + self.module.name)
-        self.plot_item.showGrid(y=True, x=True, alpha=1.)
-        self.update_auto_plots()
+        self.win = pg.GraphicsWindow(title="Autocalibration")
+        self.definition_item = self.win.addPlot(title='Define Setpoint')
+        self.definition_item.showGrid(y=True, x=True, alpha=1.)
+        self.calibration_item = self.win.addPlot(title='Calibration Data')
+        self.calibration_item.showGrid(y=True, x=True, alpha=1.)
+        self.update_plots()
         self.main_layout.addWidget(self.win)
         self.button_calibrate = QtWidgets.QPushButton('Calibrate')
         self.button_acquire = QtWidgets.QPushButton('Acquire Errorsignal')
         self.main_layout.addWidget(self.button_calibrate)
         self.main_layout.addWidget(self.button_acquire)
         self.button_calibrate.clicked.connect(lambda: self.module.calibrate())
-        self.button_acquire.clicked.connect(lambda: self.module.acquire_errorsignal())
+        self.button_acquire.clicked.connect(lambda: self.module.get_setpoint_definition_data())
         self.input_calibrated()
 
     def _update_search_pattern_bounds(self):
@@ -562,10 +564,16 @@ class AutoCalibrateInputWidget(LockboxInputWidget):
         pass
     
     def input_calibrated(self, input=None):
-        self.update_autolock_plot()
+        self.update_plots()
     
     def update_plots(self):
-        self.plot_item.clear()
+        # definition plot first
+        lockpoint = self.module.setpoint_x
+        signal = self.module.expected_signal(lockpoint)
+        self.definition_item.clear()
+        self.definition_item.plot(*self.module.setpoint_definition_data, pen='y')
+        self.definition_item.plot(x = [lockpoint], y = [signal], symbolPen='b', 
+                                  symbol='o')
         self.search_pattern_region = pg.LinearRegionItem( orientation='vertical',
                                                           values=[self.module.search_pattern_xmin, 
                                                                   self.module.search_pattern_xmax],
@@ -574,26 +582,32 @@ class AutoCalibrateInputWidget(LockboxInputWidget):
         xmin = self.module.search_pattern_xmin
         xmax = self.module.search_pattern_xmax
         self.search_pattern_region.setRegion([xmin, xmax])
-        self.plot_item.addItem(self.search_pattern_region)
-        # first plot the solid line for the last (most accurate data):
-        if len(self.module.acquired_signals) > 0:
-            actuator_sig, error_sig = self.module.acquired_signals[-1]
-            self.plot_item.plot(x=actuator_sig, y=error_sig, pen='y')
-        # next plot previous scan data as individual data points
+        self.definition_item.addItem(self.search_pattern_region)
+        
+        # check if there is calibration data yet
+        if len(self.module.calibration_data.calibration_datasets) == 0:
+            return None
+        
+        # now the calibration plot
+        # first plot the scaled search pattern as a solid line 
+        self.calibration_item.clear()
+        self.calibration_item.plot(*self.module.calibration_data.scaled_search_pattern, pen='y')
         i = 0
-        for actuator_sig, error_sig in self.module.acquired_signals[:-1]:
-            self.plot_item.plot(x=actuator_sig, y=error_sig, pen=None, symbol='o', 
-                                symbolPen=self._color_cycle[i%len(self.color_cycle)])
-        # plot slope
-        setpoint = self.module.autolock_setpoint_x
-        signal = self.module.expected_signal(setpoint)
+        for x, y in self.module.calibration_data.calibration_datasets:
+            self.calibration_item.plot(x, y, pen=None, symbol='o', 
+                                symbolPen=self._color_cycle[i%len(self._color_cycle)])
+            i+=1
+
+        # plot setpoint and slope
+        lockpoint = self.module.calibration_data.lock_point_x
+        signal = self.module.calibration_data.lock_point_y
         dx = self.module.slope_interval/2.
-        slope = self.module.expected_slope(setpoint)
-        self.curve_slope = self.plot_item.plot(x = [setpoint-dx, setpoint+dx], 
+        slope = self.module.expected_slope(lockpoint)
+        self.curve_slope = self.plot_item.plot(x = [lockpoint-dx, lockpoint+dx], 
                                                y = [signal-slope*dx, signal+slope*dx],
                                                pen = pg.mkPen('b', width=5))
         # plot lockpoint
-        self.lockpoint = self.plot_item.plot(x = [setpoint], y = [signal], symbolPen='b', symbol='o')
+        self.plot_item.plot(x = [lockpoint], y = [signal], symbolPen='b', symbol='o')
         
 
 

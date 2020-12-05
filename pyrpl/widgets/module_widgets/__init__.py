@@ -12,7 +12,7 @@ from .iir_widget import IirWidget
 from .iq_widget import IqWidget
 from .pwm_widget import PwmWidget
 from .lockbox_widget import LockboxWidget, OutputSignalWidget, InputsWidget, \
-                            LockboxInputWidget, AutoLockInputWidget, LockboxSequenceWidget, LockboxStageWidget, StageOutputWidget
+                            LockboxInputWidget, AutoCalibrateInputWidget, LockboxSequenceWidget, LockboxStageWidget, StageOutputWidget
 from .module_manager_widget import ModuleManagerWidget, IqManagerWidget, PidManagerWidget, ScopeManagerWidget, \
                                     IirManagerWidget, AsgManagerWidget, PwmManagerWidget
 from .na_widget import NaWidget
