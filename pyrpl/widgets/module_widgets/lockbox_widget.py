@@ -521,10 +521,13 @@ class LockboxInputWidget(ModuleWidget):
                             'show GUI display of expected signal (min at %f)!',
                             input.name, input.expected_signal(0))
 
-class AutoLockInputWidget(LockboxInputWidget):
+class AutoCalibrateInputWidget(LockboxInputWidget):
     """
-    A widget to represent the autolockbox input - needs more interactivity.
+    A widget to represent the auto calibrate input - needs more interactivity.
     """
+    
+    _color_cycle = ['g', 'r', 'c', 'm', 'o', 'w']
+    
     def init_gui(self):
         #self.main_layout = QtWidgets.QVBoxLayout(self)
         self.init_main_layout(orientation="vertical")
@@ -533,20 +536,14 @@ class AutoLockInputWidget(LockboxInputWidget):
         self.win = pg.GraphicsWindow(title="Expected signal")
         self.plot_item = self.win.addPlot(title='Expected ' + self.module.name)
         self.plot_item.showGrid(y=True, x=True, alpha=1.)
-        self.search_pattern_region = pg.LinearRegionItem(
-                orientation='vertical',
-                values=[self.module.search_pattern_xmin, 
-                        self.module.search_pattern_xmax],
-                movable=True)
-        self.search_pattern_region.sigRegionChangeFinished.connect(self._update_search_pattern_bounds)
-        self.plot_item.addItem(self.search_pattern_region)
-        self.curve = self.plot_item.plot(pen='y')
-        self.curve_slope = self.plot_item.plot(pen=pg.mkPen('b', width=5))
-        self.symbol = self.plot_item.plot(pen='b', symbol='o')
+        self.update_auto_plots()
         self.main_layout.addWidget(self.win)
         self.button_calibrate = QtWidgets.QPushButton('Calibrate')
+        self.button_acquire = QtWidgets.QPushButton('Acquire Errorsignal')
         self.main_layout.addWidget(self.button_calibrate)
+        self.main_layout.addWidget(self.button_acquire)
         self.button_calibrate.clicked.connect(lambda: self.module.calibrate())
+        self.button_acquire.clicked.connect(lambda: self.module.acquire_errorsignal())
         self.input_calibrated()
 
     def _update_search_pattern_bounds(self):
@@ -554,10 +551,51 @@ class AutoLockInputWidget(LockboxInputWidget):
         self.module.search_pattern_xmin = xmin
         self.module.search_pattern_xmax = xmax
         
-    def update_autolock_plot(self):
+    def hide_lock(self):
+        # have to override because this plot contains different elements than LockboxInputWidget
+        # TODO: think of a nice way to visualize that the lock is activated
+        pass
+        
+    def show_lock(self):
+        # have to override because this plot contains different elements than LockboxInputWidget
+        # TODO: think of a nice way to visualize that the lock is activated
+        pass
+    
+    def input_calibrated(self, input=None):
+        self.update_autolock_plot()
+    
+    def update_plots(self):
+        self.plot_item.clear()
+        self.search_pattern_region = pg.LinearRegionItem( orientation='vertical',
+                                                          values=[self.module.search_pattern_xmin, 
+                                                                  self.module.search_pattern_xmax],
+                                                          movable=True)
+        self.search_pattern_region.sigRegionChangeFinished.connect(self._update_search_pattern_bounds)
         xmin = self.module.search_pattern_xmin
         xmax = self.module.search_pattern_xmax
         self.search_pattern_region.setRegion([xmin, xmax])
+        self.plot_item.addItem(self.search_pattern_region)
+        # first plot the solid line for the last (most accurate data):
+        if len(self.module.acquired_signals) > 0:
+            actuator_sig, error_sig = self.module.acquired_signals[-1]
+            self.plot_item.plot(x=actuator_sig, y=error_sig, pen='y')
+        # next plot previous scan data as individual data points
+        i = 0
+        for actuator_sig, error_sig in self.module.acquired_signals[:-1]:
+            self.plot_item.plot(x=actuator_sig, y=error_sig, pen=None, symbol='o', 
+                                symbolPen=self._color_cycle[i%len(self.color_cycle)])
+        # plot slope
+        setpoint = self.module.autolock_setpoint_x
+        signal = self.module.expected_signal(setpoint)
+        dx = self.module.slope_interval/2.
+        slope = self.module.expected_slope(setpoint)
+        self.curve_slope = self.plot_item.plot(x = [setpoint-dx, setpoint+dx], 
+                                               y = [signal-slope*dx, signal+slope*dx],
+                                               pen = pg.mkPen('b', width=5))
+        # plot lockpoint
+        self.lockpoint = self.plot_item.plot(x = [setpoint], y = [signal], symbolPen='b', symbol='o')
+        
+
 
 
 class InputsWidget(QtWidgets.QWidget):
