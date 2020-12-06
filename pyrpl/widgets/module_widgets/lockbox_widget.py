@@ -526,7 +526,7 @@ class AutoCalibrateInputWidget(LockboxInputWidget):
     A widget to represent the auto calibrate input - needs more interactivity.
     """
     
-    _color_cycle = ['g', 'r', 'c', 'm', 'o', 'w']
+    _color_cycle = ['g', 'r', 'c', 'm', 'w']
     
     def init_gui(self):
         #self.main_layout = QtWidgets.QVBoxLayout(self)
@@ -534,18 +534,22 @@ class AutoCalibrateInputWidget(LockboxInputWidget):
         self.init_attribute_layout()
 
         self.win = pg.GraphicsWindow(title="Autocalibration")
-        self.definition_item = self.win.addPlot(title='Define Setpoint')
-        self.definition_item.showGrid(y=True, x=True, alpha=1.)
-        self.calibration_item = self.win.addPlot(title='Calibration Data')
-        self.calibration_item.showGrid(y=True, x=True, alpha=1.)
-        self.update_plots()
+        self.def_plot = self.win.addPlot(title='Define Setpoint')
+        self.def_plot.showGrid(y=True, x=True, alpha=1.)
+        self.cal_plot = self.win.addPlot(title='Calibration Data')
+        self.cal_plot.showGrid(y=True, x=True, alpha=1.)
+        self._create_def_plot()
         self.main_layout.addWidget(self.win)
         self.button_calibrate = QtWidgets.QPushButton('Calibrate')
         self.button_acquire = QtWidgets.QPushButton('Acquire Errorsignal')
-        self.main_layout.addWidget(self.button_calibrate)
-        self.main_layout.addWidget(self.button_acquire)
         self.button_calibrate.clicked.connect(lambda: self.module.calibrate())
         self.button_acquire.clicked.connect(lambda: self.module.get_setpoint_definition_data())
+        button_box = QtWidgets.QGroupBox("")
+        button_layout = QtWidgets.QHBoxLayout()
+        button_layout.addWidget(self.button_acquire)        
+        button_layout.addWidget(self.button_calibrate)        
+        button_box.setLayout(button_layout)
+        self.main_layout.addWidget(button_box)        
         self.input_calibrated()
 
     def _update_search_pattern_bounds(self):
@@ -553,48 +557,72 @@ class AutoCalibrateInputWidget(LockboxInputWidget):
         self.module.search_pattern_xmin = xmin
         self.module.search_pattern_xmax = xmax
         
+    def _update_lock_point(self):
+        lockpoint = self.lock_point_indicator.value()
+        self.module.setpoint_x = lockpoint
+        
     def hide_lock(self):
         # have to override because this plot contains different elements than LockboxInputWidget
         # TODO: think of a nice way to visualize that the lock is activated
         pass
         
-    def show_lock(self):
+    def show_lock(self, stage):
         # have to override because this plot contains different elements than LockboxInputWidget
         # TODO: think of a nice way to visualize that the lock is activated
         pass
     
     def input_calibrated(self, input=None):
         self.update_plots()
-    
-    def update_plots(self):
+        
+    def _create_def_plot(self):
         # definition plot first
         lockpoint = self.module.setpoint_x
         signal = self.module.expected_signal(lockpoint)
-        self.definition_item.clear()
-        self.definition_item.plot(*self.module.setpoint_definition_data, pen='y')
-        self.definition_item.plot(x = [lockpoint], y = [signal], symbolPen='b', 
+        self.def_plot.clear()
+        self.def_data_curve = self.def_plot.plot(pen='y')
+        self.def_setpoint_marker = self.def_plot.plot(x = [lockpoint], y = [signal], symbolPen='b', 
                                   symbol='o')
+        self.def_slope = self.def_plot.plot(pen = pg.mkPen('b', width=5))
         self.search_pattern_region = pg.LinearRegionItem( orientation='vertical',
                                                           values=[self.module.search_pattern_xmin, 
                                                                   self.module.search_pattern_xmax],
-                                                          movable=True)
+                                                          movable=True, 
+                                                          swapMode='sort')
         self.search_pattern_region.sigRegionChangeFinished.connect(self._update_search_pattern_bounds)
-        xmin = self.module.search_pattern_xmin
-        xmax = self.module.search_pattern_xmax
-        self.search_pattern_region.setRegion([xmin, xmax])
-        self.definition_item.addItem(self.search_pattern_region)
+        self.lock_point_indicator = pg.InfiniteLine(pos=self.module.setpoint_x, angle=90, 
+                                                    movable=True, pen='b', hoverPen=pg.mkPen('r', width=5),
+                                                    )
+        self.lock_point_indicator.sigPositionChanged.connect(self._update_lock_point)
+
+        self.def_plot.addItem(self.search_pattern_region)
+        self.def_plot.addItem(self.lock_point_indicator)
+           
+    def update_plots(self):
+        xmin_sp = self.module.search_pattern_xmin
+        xmax_sp = self.module.search_pattern_xmax
+        self.search_pattern_region.setRegion([xmin_sp, xmax_sp])
+        lockpoint_x = self.module.setpoint_x
+        lockpoint_y = self.module.expected_signal(lockpoint_x)
+        self.def_setpoint_marker.setData([lockpoint_x], [lockpoint_y])
+        self.lock_point_indicator.setValue(lockpoint_x)
+        self.def_data_curve.setData(*self.module.setpoint_definition_data)
+        dx = self.module.slope_interval/2.
+        xvals = np.array([lockpoint_x - dx, lockpoint_x + dx])
+        self.def_slope.setData(xvals,self.module.expected_signal(xvals))
         
         # check if there is calibration data yet
         if len(self.module.calibration_data.calibration_datasets) == 0:
             return None
         
         # now the calibration plot
+        # we want to clear and recreate this plot every time because the 
+        # number of datasets can change
         # first plot the scaled search pattern as a solid line 
-        self.calibration_item.clear()
-        self.calibration_item.plot(*self.module.calibration_data.scaled_search_pattern, pen='y')
+        self.cal_plot.clear()
+        self.cal_plot.plot(*self.module.calibration_data.scaled_search_pattern, pen=pg.mkPen('y', width=5))
         i = 0
         for x, y in self.module.calibration_data.calibration_datasets:
-            self.calibration_item.plot(x, y, pen=None, symbol='o', 
+            self.cal_plot.plot(x, y, pen=None, symbol='o', symbolSize=3,
                                 symbolPen=self._color_cycle[i%len(self._color_cycle)])
             i+=1
 
@@ -603,11 +631,11 @@ class AutoCalibrateInputWidget(LockboxInputWidget):
         signal = self.module.calibration_data.lock_point_y
         dx = self.module.slope_interval/2.
         slope = self.module.expected_slope(lockpoint)
-        self.curve_slope = self.plot_item.plot(x = [lockpoint-dx, lockpoint+dx], 
+        self.cal_slope = self.cal_plot.plot(x = [lockpoint-dx, lockpoint+dx], 
                                                y = [signal-slope*dx, signal+slope*dx],
                                                pen = pg.mkPen('b', width=5))
         # plot lockpoint
-        self.plot_item.plot(x = [lockpoint], y = [signal], symbolPen='b', symbol='o')
+        self.cal_plot.plot(x = [lockpoint], y = [signal], symbolPen='b', symbol='o')
         
 
 
@@ -972,6 +1000,16 @@ class LockboxWidget(ModuleWidget):
         self.button_sweep.clicked.connect(lambda: self.module.sweep())
         self.button_calibrate_all.clicked.connect(lambda: self.module.calibrate_all())
 
+        # inputs/ outputs widget
+        self.all_sig_widget = AllSignalsWidget(self)
+        self.button_hide2 = QtWidgets.QPushButton("hide inputs / outputs")
+        #self.button_hide_clicked() # open by default
+        self.button_hide2.setMaximumHeight(15)
+        #self.button_hide2.setMaximumWidth(150)
+        self.button_hide2.clicked.connect(self.button_hide2_clicked)
+        self.main_layout.addWidget(self.button_hide2)
+        self.main_layout.addWidget(self.all_sig_widget)
+        
         # Locking sequence widget + hide button
         self.sequence_widget = self.module.sequence._create_widget()
         self.scrollarea = QtWidgets.QScrollArea()
@@ -991,16 +1029,6 @@ class LockboxWidget(ModuleWidget):
         # self.button_hide1.setMaximumHeight(15)
         # self.button_hide1.clicked.connect(self.button_hide1_clicked)
         # self.main_layout.addWidget(self.button_hide1)
-
-        # inputs/ outputs widget
-        self.all_sig_widget = AllSignalsWidget(self)
-        self.button_hide2 = QtWidgets.QPushButton("hide inputs / outputs")
-        #self.button_hide_clicked() # open by default
-        self.button_hide2.setMaximumHeight(15)
-        #self.button_hide2.setMaximumWidth(150)
-        self.button_hide2.clicked.connect(self.button_hide2_clicked)
-        self.main_layout.addWidget(self.button_hide2)
-        self.main_layout.addWidget(self.all_sig_widget)
 
         # optional
         for name in self.module._module_attributes:

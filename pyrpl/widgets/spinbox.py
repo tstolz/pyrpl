@@ -173,6 +173,10 @@ class NumberSpinBox(QtWidgets.QWidget):
             #    self.module._logger.warning("Number: %d", res)
         #else:
         return super(NumberSpinBox, self).mousePressEvent(event)
+    
+    def mouseReleaseEvent(self, event):
+        self.finish_step()
+        return super(NumberSpinBox, self).mouseReleaseEvent(event)
 
     @property
     def is_increasing(self):

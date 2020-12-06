@@ -37,12 +37,19 @@ class AutoCalibrationData(CalibrationData):
                                              doc="search pattern scaled "
                                                  "to calibration scans")
     def clean_up_datasets(self):
-        #TODO: remove overlapping regions in datasets
-        print('cleaning up datasets')
+        """ removes overlapping regions in datasets, keeping always the last
+        recorded data. """
+        # could do something like
+        # xmin = np.inf
+        # xmax = -np.inf
+        # for i in range(len(self.calibration_datasets)-1, -1, -1):
+        #     dset = self.calibration_datasets[i]
+        #     keep = (dset[0] < xmin) | (dset[0] > xmax)
+        #     xmin = min(dset[0])
+        #     xmax = max(dset[0])
+        #     self.calibration_datasets[i] = [dset[0][keep], dset[1][keep]]
+        # but actually it is nice to see all the datasets for debugging
         pass
-
-
-    
     
 class AutoCalibrateInput(InputSignal):
     """ 
@@ -81,10 +88,10 @@ class AutoCalibrateInput(InputSignal):
                          "calibration_sweep_zoomfactor"]
     calibration_data = ModuleProperty(AutoCalibrationData)
 
-    setpoint_x = FloatProperty(default=0., doc = "position of the lock point"
-                                                 "on the x-axis in the "
-                                                 "definition data")
-    slope_interval = FloatProperty(default=0.1, min=0, doc = "interval "
+    setpoint_x = FloatProperty(default=0., call_setup = True, increment=1e-4,
+                               doc = "position of the lock point on the x-axis in the definition data")
+    slope_interval = FloatProperty(default=0.1, min=0, call_setup = True,
+                                   doc = "interval "
                                   "on the x-axis for fitting the slope of the "
                                   "errorsignal around the setpoint")
     search_pattern_xmin = FloatProperty(default=-1, call_setup=True,
@@ -129,7 +136,15 @@ class AutoCalibrateInput(InputSignal):
         return self.calibration_data.slope_at_lock_point
     
     def _setup(self):
-        self._signal_launcher.update_autolock_plot.emit()
+        # check if search pattern boundaries are sorted
+        if self.search_pattern_xmin > self.search_pattern_xmax:
+            tmp = self.search_pattern_xmin
+            self.search_pattern_xmin = self.search_pattern_xmax
+            self.search_pattern_xmax = tmp
+        # check if setpoint lies within search pattern boundaries
+        if self.setpoint_x < self.search_pattern_xmin or self.setpoint_x < self.search_pattern_xmin:
+            self.setpoint_x = (self.search_pattern_xmin + self.search_pattern_xmax)/2
+        self._signal_launcher.update_plots.emit()
 
     @property
     def sweep_output(self):
@@ -140,7 +155,7 @@ class AutoCalibrateInput(InputSignal):
         actuator, error = self.setpoint_definition_data
         mask = (actuator > self.search_pattern_xmin) & \
                (actuator < self.search_pattern_xmax)
-        return actuator[mask], error[mask]
+        return [actuator[mask], error[mask]]
         
     def _get_scope_data(self):
         """
@@ -177,7 +192,7 @@ class AutoCalibrateInput(InputSignal):
         
     def get_setpoint_definition_data(self, autosave=True):
         """
-        Acquire the actuator signal along with the errorsignal over the full 
+        Acquire the error signal along with the actuator signal over the full 
         calibration sweep range.
         
         The purpose of this function is to record a full range sweep so that 
@@ -240,14 +255,15 @@ class AutoCalibrateInput(InputSignal):
             return None
         
         # initialize variables
-        search_pattern = tw_search_pattern = self.lockpoint_search_pattern
+        tw_search_pattern = np.copy(self.lockpoint_search_pattern)
+        search_pattern = np.copy(self.lockpoint_search_pattern)
         sweep_offset = self.calibration_sweep_offset
         sweep_amplitude = self.calibration_sweep_amplitude
         self.calibration_data.calibration_datasets = [] # reset to empty list
-        self.calibration_data.calibrated_lockpoint = self.setpoint_x
+        self.calibration_data.lock_point_x = self.setpoint_x
         
         # calibration sweeps
-        for i_sweep in self.calibration_sweep_steps:
+        for i_sweep in range(self.calibration_sweep_steps):
             # scan and get signal
             lb.auto_calibration_sweep(sweep_amplitude,
                                       sweep_offset,
@@ -281,7 +297,7 @@ class AutoCalibrateInput(InputSignal):
                                             matching_actuator_values)
             # apply this to the calibrated lock point
             # setpoint_x has to be inside the search pattern for this to work
-            self.calibration_data.lock_point_x = time_warp(self.setpoint_x)
+            self.calibration_data.lock_point_x = time_warp(self.calibration_data.lock_point_x)
             # the timewarped search pattern should contain the original 
             # setpoint definition data, but with the x-axis scaled (time-warped)
             tw_search_pattern[0] = time_warp(tw_search_pattern[0])
@@ -291,17 +307,19 @@ class AutoCalibrateInput(InputSignal):
             # use the new data which is more accurate
             pattern_mask = (actuator_signal >= min(matching_actuator_values)) & \
                            (actuator_signal <= max(matching_actuator_values))
-            search_pattern[0] = actuator_signal[pattern_mask]
-            search_pattern[1] = error_signal[pattern_mask]
+            search_pattern = np.array([actuator_signal[pattern_mask], 
+                                       error_signal[pattern_mask]])
+            
             # determine slope around lockpoint
-            a_min = self.calibration_data.lock_point_x - slope_interval/2.
-            a_max = self.calibration_data.lock_point_x + slope_interval/2.
+            a_min = self.calibration_data.lock_point_x - self.slope_interval/2.
+            a_max = self.calibration_data.lock_point_x + self.slope_interval/2.
             slope_mask = (actuator_signal >= a_min) & \
                          (actuator_signal <= a_max)
             slope, offset = np.polyfit(actuator_signal[slope_mask], 
                                error_signal[slope_mask], deg=1)
             self.calibration_data.slope_at_lock_point = slope
             self.calibration_data.lock_point_y = offset + slope*self.calibration_data.lock_point_x
+            self.calibration_data.calibration_datasets.append([actuator_signal, error_signal])
             
             # clean up data
             self.calibration_data.clean_up_datasets()
@@ -311,16 +329,16 @@ class AutoCalibrateInput(InputSignal):
             # we always want to use the full amplitude for sweeping even if 
             # this shifts the lock point out of the center
             sweep_offset = np.clip(self.calibration_data.lock_point_x,
-                                   self.sweep_output.min_voltage + amplitude,
-                                   self.sweep_output.max_voltage - amplitude)
+                                   self.sweep_output.min_voltage + sweep_amplitude,
+                                   self.sweep_output.max_voltage - sweep_amplitude)
             
-            self.lockbox._signal_launcher.update_plots.emit()
+            self._signal_launcher.update_plots.emit()
             
         # set stage0 offset
         if self.jump_to_lockpoint_in_first_stage:
             name = self.sweep_output.name
-            stage0 = lb.sequence[1]
-            stage0.outputs[name].offset = self.calibrated_lockpoint
+            stage0 = lb.sequence[0]
+            stage0.outputs[name].offset = self.calibration_data.lock_point_x
         # save data if desired
         if autosave:
             params1 = dict(self.calibration_data.setup_attributes) # make a copy
@@ -376,5 +394,5 @@ class AutoCalibrateLockbox(Lockbox):
         """
         if self.always_calibrate_before_locking:
             self.inputs.autocalibrate_input.calibrate()               
-        super(AutoLock, self).lock(**kwargs)
+        super(AutoCalibrateLockbox, self).lock(**kwargs)
 
