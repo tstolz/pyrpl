@@ -556,10 +556,11 @@ class AutoCalibrateInputWidget(LockboxInputWidget):
         xmin, xmax = self.search_pattern_region.getRegion()
         self.module.search_pattern_xmin = xmin
         self.module.search_pattern_xmax = xmax
+        self.lock_point_indicator.setBounds((xmin, xmax))
         
     def _update_lock_point(self):
         lockpoint = self.lock_point_indicator.value()
-        self.module.setpoint_x = lockpoint
+        self.module.lockpoint_x = lockpoint
         
     def hide_lock(self):
         # have to override because this plot contains different elements than LockboxInputWidget
@@ -576,12 +577,14 @@ class AutoCalibrateInputWidget(LockboxInputWidget):
         
     def _create_def_plot(self):
         # definition plot first
-        lockpoint = self.module.setpoint_x
-        signal = self.module.expected_signal(lockpoint)
+        lockpoint_x = self.module.lockpoint_x
+        lockpoint_y = self.module.lockpoint_y
         self.def_plot.clear()
         self.def_data_curve = self.def_plot.plot(pen='y')
-        self.def_setpoint_marker = self.def_plot.plot(x = [lockpoint], y = [signal], symbolPen='b', 
-                                  symbol='o')
+        self.def_setpoint_marker = self.def_plot.plot(x = [lockpoint_x], 
+                                                      y = [lockpoint_y], 
+                                                      symbolPen='b', 
+                                                      symbol='o')
         self.def_slope = self.def_plot.plot(pen = pg.mkPen('b', width=5))
         self.search_pattern_region = pg.LinearRegionItem( orientation='vertical',
                                                           values=[self.module.search_pattern_xmin, 
@@ -589,11 +592,11 @@ class AutoCalibrateInputWidget(LockboxInputWidget):
                                                           movable=True, 
                                                           swapMode='sort')
         self.search_pattern_region.sigRegionChangeFinished.connect(self._update_search_pattern_bounds)
-        self.lock_point_indicator = pg.InfiniteLine(pos=self.module.setpoint_x, angle=90, 
+        self.lock_point_indicator = pg.InfiniteLine(pos=self.module.lockpoint_x, angle=90, 
                                                     movable=True, pen='b', hoverPen=pg.mkPen('r', width=5),
                                                     )
-        self.lock_point_indicator.sigPositionChanged.connect(self._update_lock_point)
-
+        self.lock_point_indicator.sigPositionChangeFinished.connect(self._update_lock_point)
+        self.lock_point_indicator.setBounds(self.search_pattern_region.getRegion())
         self.def_plot.addItem(self.search_pattern_region)
         self.def_plot.addItem(self.lock_point_indicator)
            
@@ -601,14 +604,14 @@ class AutoCalibrateInputWidget(LockboxInputWidget):
         xmin_sp = self.module.search_pattern_xmin
         xmax_sp = self.module.search_pattern_xmax
         self.search_pattern_region.setRegion([xmin_sp, xmax_sp])
-        lockpoint_x = self.module.setpoint_x
-        lockpoint_y = self.module.expected_signal(lockpoint_x)
+        lockpoint_x = self.module.lockpoint_x
+        lockpoint_y = self.module.lockpoint_y
         self.def_setpoint_marker.setData([lockpoint_x], [lockpoint_y])
         self.lock_point_indicator.setValue(lockpoint_x)
-        self.def_data_curve.setData(*self.module.setpoint_definition_data)
-        dx = self.module.slope_interval/2.
-        xvals = np.array([lockpoint_x - dx, lockpoint_x + dx])
-        self.def_slope.setData(xvals,self.module.expected_signal(xvals))
+        data = np.asarray(self.module.setpoint_definition_data)
+        self.def_data_curve.setData(data[0], data[1])
+        i_slope = np.abs(data[0] - lockpoint_x) < self.module.slope_interval 
+        self.def_slope.setData(data[0][i_slope], data[1][i_slope])
         
         # check if there is calibration data yet
         if len(self.module.calibration_data.calibration_datasets) == 0:

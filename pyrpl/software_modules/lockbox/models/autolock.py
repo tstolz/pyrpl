@@ -8,14 +8,11 @@ from ....attributes import DataProperty
 from qtpy import QtCore
 import dtw
 
-import matplotlib.pyplot as plt
-
 class SignalLauncherAutoCalibrateInput(SignalLauncher):
     """
-    A SignalLauncher for the autolock
+    A SignalLauncher for the autocalibrate input.
     """
     update_plots = QtCore.Signal()
-    input_acquired = QtCore.Signal(list)
     
 
 class AutoCalibrationData(CalibrationData):
@@ -70,7 +67,7 @@ class AutoCalibrateInput(InputSignal):
     
     _widget_class = AutoCalibrateInputWidget
     _signal_launcher = SignalLauncherAutoCalibrateInput
-    _setup_attributes = ["setpoint_x", "slope_interval",
+    _setup_attributes = ["lockpoint_x", "slope_interval",
                          "search_pattern_xmin", "search_pattern_xmax",
                          "jump_to_lockpoint_in_first_stage",
                          "calibration_sweep_amplitude",
@@ -78,7 +75,7 @@ class AutoCalibrateInput(InputSignal):
                          "calibration_sweep_frequency",
                          "calibration_sweep_steps",
                          "calibration_sweep_zoomfactor"]
-    _gui_attributes = ["setpoint_x", "slope_interval",
+    _gui_attributes = ["lockpoint_x", "slope_interval",
                          "search_pattern_xmin", "search_pattern_xmax",
                          "jump_to_lockpoint_in_first_stage",
                          "calibration_sweep_amplitude",
@@ -88,7 +85,7 @@ class AutoCalibrateInput(InputSignal):
                          "calibration_sweep_zoomfactor"]
     calibration_data = ModuleProperty(AutoCalibrationData)
 
-    setpoint_x = FloatProperty(default=0., call_setup = True, increment=1e-4,
+    lockpoint_x = FloatProperty(default=0., call_setup = True, increment=1e-4,
                                doc = "position of the lock point on the x-axis in the definition data")
     slope_interval = FloatProperty(default=0.1, min=0, call_setup = True,
                                    doc = "interval "
@@ -102,7 +99,7 @@ class AutoCalibrateInput(InputSignal):
                                               doc = "xmax value of the pattern"
                                               "that is used when searching the "
                                               "lockpoint")
-    setpoint_definition_data = DataProperty(default=[], 
+    setpoint_definition_data = DataProperty(default=[[],[]], 
                                             doc="error signal and actuator "
                                                 "signal for defining the "
                                                 "setpoint")
@@ -126,13 +123,25 @@ class AutoCalibrateInput(InputSignal):
                                               "factor every time")
     
     def __init__(self, parent, name=None):
-        self.data_function = lambda x: np.array(x)*0 # return a flat function by default
         super(AutoCalibrateInput, self).__init__(parent, name=name)
         
     def expected_signal(self, variable):
-        return self.data_function(variable)
-
+        """
+        We don't rely on a physical model of the system for the 
+        AutoCalibrateLockbox. This means the physical quantity we want to 
+        stabilize is actually the input voltage and we regard the output 
+        voltage as our actuator that affects the input in a black-box-fashion. 
+        Therefore, we don't want to have the additional conversion to and from
+        the physical model variable that the other lockbox classes provide. 
+        This means using an identity function here.
+        """
+        return variable 
+    
     def expected_slope(self, variable):
+        """
+        Slope of the error signal voltage with respect to the output voltage. 
+        This is required to estimate the external loop gain in output.py.
+        """
         return self.calibration_data.slope_at_lock_point
     
     def _setup(self):
@@ -142,17 +151,25 @@ class AutoCalibrateInput(InputSignal):
             self.search_pattern_xmin = self.search_pattern_xmax
             self.search_pattern_xmax = tmp
         # check if setpoint lies within search pattern boundaries
-        if self.setpoint_x < self.search_pattern_xmin or self.setpoint_x < self.search_pattern_xmin:
-            self.setpoint_x = (self.search_pattern_xmin + self.search_pattern_xmax)/2
+        if self.lockpoint_x < self.search_pattern_xmin or self.lockpoint_x < self.search_pattern_xmin:
+            self.lockpoint_x = (self.search_pattern_xmin + self.search_pattern_xmax)/2
         self._signal_launcher.update_plots.emit()
 
+    @property
+    def lockpoint_y(self):
+        # this is just for plotting, so just interpolate
+        if len(self.setpoint_definition_data[0])>0:
+            return np.interp(self.lockpoint_x, *self.setpoint_definition_data)
+        else:
+            return 0
+            
     @property
     def sweep_output(self):
         return self.lockbox.outputs[self.lockbox.default_sweep_output]
     
     @property
     def lockpoint_search_pattern(self):
-        actuator, error = self.setpoint_definition_data
+        actuator, error = np.asarray(self.setpoint_definition_data)
         mask = (actuator > self.search_pattern_xmin) & \
                (actuator < self.search_pattern_xmax)
         return [actuator[mask], error[mask]]
@@ -207,19 +224,6 @@ class AutoCalibrateInput(InputSignal):
             self._logger.warning('Aborting acquisition because no scope is available...')
             return None
         self.setpoint_definition_data = [actuator_signal, error_signal]
-
-        self.data_function = lambda x: np.interp(x, actuator_signal, 
-                                                 error_signal)
-
-        plt.figure()
-        plt.plot(times, actuator_signal)
-        plt.show()
-        plt.figure()
-        plt.plot(times, error_signal)
-        plt.show()
-        plt.figure()
-        plt.plot(actuator_signal, self.data_function(actuator_signal), 'r-')
-        plt.show()
         
         self.plot_range = np.linspace(min(actuator_signal), max(actuator_signal), 1000)
 
@@ -260,7 +264,7 @@ class AutoCalibrateInput(InputSignal):
         sweep_offset = self.calibration_sweep_offset
         sweep_amplitude = self.calibration_sweep_amplitude
         self.calibration_data.calibration_datasets = [] # reset to empty list
-        self.calibration_data.lock_point_x = self.setpoint_x
+        self.calibration_data.lock_point_x = self.lockpoint_x
         
         # calibration sweeps
         for i_sweep in range(self.calibration_sweep_steps):
@@ -296,7 +300,7 @@ class AutoCalibrateInput(InputSignal):
             time_warp = lambda x: np.interp(x, search_pattern[0], 
                                             matching_actuator_values)
             # apply this to the calibrated lock point
-            # setpoint_x has to be inside the search pattern for this to work
+            # lockpoint_x has to be inside the search pattern for this to work
             self.calibration_data.lock_point_x = time_warp(self.calibration_data.lock_point_x)
             # the timewarped search pattern should contain the original 
             # setpoint definition data, but with the x-axis scaled (time-warped)
@@ -318,6 +322,8 @@ class AutoCalibrateInput(InputSignal):
             slope, offset = np.polyfit(actuator_signal[slope_mask], 
                                error_signal[slope_mask], deg=1)
             self.calibration_data.slope_at_lock_point = slope
+            # lock_point_y is just for plotting, will not affect the actual
+            # setpoint of the PID controller which is set in the stages
             self.calibration_data.lock_point_y = offset + slope*self.calibration_data.lock_point_x
             self.calibration_data.calibration_datasets.append([actuator_signal, error_signal])
             
@@ -350,8 +356,7 @@ class AutoCalibrateInput(InputSignal):
             return newcurve1 # not sure which one to return here?
         else:
             return None
-
-
+            
 class AutoCalibrateLockbox(Lockbox):
     """ 
     A lockbox that uses an autocalibrate input and offers the option to perform
