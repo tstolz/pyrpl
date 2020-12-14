@@ -6,7 +6,11 @@ from ....widgets.module_widgets import AutoCalibrateInputWidget
 from ....modules import SignalLauncher
 from ....attributes import DataProperty
 from qtpy import QtCore
-import dtw
+try:
+    import dtw
+except:
+    print("dtw could not be imported, autolock will not work")
+    dtw=None
 
 class SignalLauncherAutoCalibrateInput(SignalLauncher):
     """
